@@ -12,7 +12,9 @@ pico_sdk_init()
 add_executable(rp2040_4trigger_oem_sdk
     src/commands.c
     src/main.c
+    src/settings.c
     src/status_led.c
+    src/system_clock.c
     src/trigger.c
 )
 
@@ -22,7 +24,12 @@ target_include_directories(rp2040_4trigger_oem_sdk PRIVATE
 
 target_link_libraries(rp2040_4trigger_oem_sdk
     pico_stdlib
+    hardware_clocks
+    hardware_flash
     hardware_gpio
+    hardware_irq
+    hardware_pwm
+    hardware_vreg
 )
 
 pico_enable_stdio_usb(rp2040_4trigger_oem_sdk 1)
