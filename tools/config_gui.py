@@ -26,12 +26,13 @@ TRIGGER_MODE_VALUES = ("time", "edge_count")
 EDGE_VALUES = ("rising", "falling", "both")
 LEVEL_VALUES = ("low", "high")
 PULL_VALUES = ("down", "up", "none")
-PROFILE_SCHEMA = 4
+PROFILE_SCHEMA = 5
 DEFAULT_CLOCK_FREQ_KHZ = 125000
 CLOCK_FREQ_MIN_KHZ = 48000
 CLOCK_FREQ_MAX_KHZ = 200000
 DEFAULT_EDGE_COUNT = 16742
 DEFAULT_PULSE_WIDTH_EDGES = 100
+DEFAULT_AUTO_CLEAR_DELAY_NS = 10000000
 EDGE_COUNT_MAX = 65535
 TRIGGER_PANEL_HEIGHT = 220
 DEFAULT_DIAG_CHANNEL = 1
@@ -95,6 +96,8 @@ STATUS_RE = re.compile(
     r"width_us=(?P<width_us>\d+)\s+"
     r"edge_count=(?P<edge_count>\d+)\s+"
     r"pulse_width_edges=(?P<pulse_width_edges>\d+)\s+"
+    r"(?:auto_clear_edges=(?P<auto_clear_edges>[01])\s+"
+    r"auto_clear_delay_ns=(?P<auto_clear_delay_ns>\d+)\s+)?"
     r"edge_seen=(?P<edge_seen>\d+)\s+"
     r"idle=(?P<idle>low|high)\s+"
     r"active=(?P<active>low|high)\s+"
@@ -170,6 +173,8 @@ class ChannelVars:
     width_us: tk.StringVar
     edge_count: tk.StringVar
     pulse_width_edges: tk.StringVar
+    auto_clear_edges: tk.BooleanVar
+    auto_clear_delay_ns: tk.StringVar
     idle: tk.StringVar
     active: tk.StringVar
     input_level: tk.StringVar
@@ -253,6 +258,10 @@ class TriggerConfigurator(tk.Tk):
         style.configure("Status.TLabel", padding=(8, 4))
         style.configure("Danger.TButton", foreground="#7a1b1b")
 
+    def _add_tooltip(self, text: str, *widgets: tk.Widget) -> None:
+        for widget in widgets:
+            Tooltip(widget, text)
+
     def _new_channel_vars(self, index: int) -> ChannelVars:
         return ChannelVars(
             enabled=tk.BooleanVar(value=True),
@@ -265,6 +274,8 @@ class TriggerConfigurator(tk.Tk):
             width_us=tk.StringVar(value="100"),
             edge_count=tk.StringVar(value=str(DEFAULT_EDGE_COUNT)),
             pulse_width_edges=tk.StringVar(value=str(DEFAULT_PULSE_WIDTH_EDGES)),
+            auto_clear_edges=tk.BooleanVar(value=True),
+            auto_clear_delay_ns=tk.StringVar(value=str(DEFAULT_AUTO_CLEAR_DELAY_NS)),
             idle=tk.StringVar(value="low"),
             active=tk.StringVar(value="high"),
             input_level=tk.StringVar(value="0"),
@@ -387,15 +398,23 @@ class TriggerConfigurator(tk.Tk):
             row=0, column=8, sticky="w"
         )
 
-        ttk.Label(frame, text="Clock kHz").grid(row=0, column=9, padx=(16, 6), sticky="e")
-        ttk.Spinbox(
+        clock_label = ttk.Label(frame, text="Clock kHz")
+        clock_label.grid(row=0, column=9, padx=(16, 6), sticky="e")
+        clock_spin = ttk.Spinbox(
             frame,
             textvariable=self.clock_freq_var,
             from_=CLOCK_FREQ_MIN_KHZ,
             to=CLOCK_FREQ_MAX_KHZ,
             increment=1000,
             width=10,
-        ).grid(row=0, column=10, padx=(0, 8))
+        )
+        clock_spin.grid(row=0, column=10, padx=(0, 8))
+        self._add_tooltip(
+            "RP2040 system clock in kHz. Higher values can improve timing resolution, "
+            "but use only frequencies accepted by the firmware.",
+            clock_label,
+            clock_spin,
+        )
 
         clock_button = ttk.Button(frame, text="Set Clock", command=self.apply_clock)
         clock_button.grid(row=0, column=11)
@@ -492,44 +511,81 @@ class TriggerConfigurator(tk.Tk):
 
         enabled_checkbox = ttk.Checkbutton(pins, text="Enabled", variable=vars_.enabled)
         enabled_checkbox.grid(row=0, column=0, columnspan=2, sticky="w")
-        Tooltip(
-            enabled_checkbox,
+        self._add_tooltip(
             "Enables this trigger channel. When unchecked, the firmware ignores this input "
             "and keeps the channel output idle while preserving the saved settings.",
+            enabled_checkbox,
         )
-        ttk.Label(pins, text="Activation").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(8, 2)
+        activation_label = ttk.Label(pins, text="Activation")
+        activation_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self._add_tooltip(
+            "Choose whether this channel fires by time delay after a GPIO edge or by counting "
+            "rising SWCLK/input edges.",
+            activation_label,
         )
         activation = ttk.Frame(pins)
         activation.grid(row=2, column=0, columnspan=2, sticky="ew")
-        ttk.Radiobutton(
+        delay_radio = ttk.Radiobutton(
             activation,
             text="Delay",
             variable=vars_.trigger_mode,
             value="time",
             command=lambda ch=index: self._update_channel_mode_ui(ch),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(
+        )
+        delay_radio.grid(row=0, column=0, sticky="w")
+        self._add_tooltip(
+            "Delay mode uses the selected input edge, then waits delay_us before pulsing "
+            "the output for width_us.",
+            delay_radio,
+        )
+        edge_count_radio = ttk.Radiobutton(
             activation,
             text="Edge Count",
             variable=vars_.trigger_mode,
             value="edge_count",
             command=lambda ch=index: self._update_channel_mode_ui(ch),
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        )
+        edge_count_radio.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._add_tooltip(
+            "Edge Count mode counts rising edges on a PWM B-capable input pin and fires "
+            "when Count is reached.",
+            edge_count_radio,
+        )
 
-        ttk.Label(pins, text="Pins").grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
-        ttk.Label(pins, text="Input GP").grid(row=4, column=0, sticky="w")
-        ttk.Spinbox(pins, textvariable=vars_.input_gpio, from_=0, to=29, width=8).grid(
-            row=4, column=1, padx=(8, 0), sticky="ew"
+        pins_label = ttk.Label(pins, text="Pins")
+        pins_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        input_label = ttk.Label(pins, text="Input GP")
+        input_label.grid(row=4, column=0, sticky="w")
+        input_spin = ttk.Spinbox(pins, textvariable=vars_.input_gpio, from_=0, to=29, width=8)
+        input_spin.grid(row=4, column=1, padx=(8, 0), sticky="ew")
+        self._add_tooltip(
+            "GPIO used as the trigger input. Edge Count mode requires an odd PWM B-capable "
+            "pin such as GP3, GP5, or GP7.",
+            input_label,
+            input_spin,
         )
-        ttk.Label(pins, text="Output GP").grid(row=5, column=0, sticky="w", pady=(4, 0))
-        ttk.Spinbox(pins, textvariable=vars_.output_gpio, from_=0, to=29, width=8).grid(
-            row=5, column=1, padx=(8, 0), pady=(4, 0), sticky="ew"
+        output_label = ttk.Label(pins, text="Output GP")
+        output_label.grid(row=5, column=0, sticky="w", pady=(4, 0))
+        output_spin = ttk.Spinbox(pins, textvariable=vars_.output_gpio, from_=0, to=29, width=8)
+        output_spin.grid(row=5, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "GPIO driven by this trigger. The output is driven to the configured Active level "
+            "during a pulse and Idle otherwise.",
+            output_label,
+            output_spin,
         )
-        ttk.Label(pins, text="Pull").grid(row=6, column=0, sticky="w", pady=(4, 0))
-        ttk.Combobox(
+        pull_label = ttk.Label(pins, text="Pull")
+        pull_label.grid(row=6, column=0, sticky="w", pady=(4, 0))
+        pull_combo = ttk.Combobox(
             pins, textvariable=vars_.pull, values=PULL_VALUES, state="readonly", width=10
-        ).grid(row=6, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        )
+        pull_combo.grid(row=6, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Internal input pull resistor. Use none when the external circuit already drives "
+            "the line strongly.",
+            pull_label,
+            pull_combo,
+        )
 
         time_title = ttk.Label(time_settings, text="Delay Mode")
         time_title.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -539,18 +595,34 @@ class TriggerConfigurator(tk.Tk):
             time_settings, textvariable=vars_.edge, values=EDGE_VALUES, state="readonly", width=10
         )
         edge_combo.grid(row=1, column=1, padx=(8, 0), pady=(8, 0), sticky="ew")
+        self._add_tooltip(
+            "Input transition used in Delay mode. Ignored when Activation is Edge Count.",
+            edge_label,
+            edge_combo,
+        )
         delay_label = ttk.Label(time_settings, text="Delay us")
         delay_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
         delay_spin = ttk.Spinbox(
             time_settings, textvariable=vars_.delay_us, from_=0, to=4294967295, width=12
         )
         delay_spin.grid(row=2, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Delay in microseconds from the selected input edge to output activation in "
+            "Delay mode.",
+            delay_label,
+            delay_spin,
+        )
         width_label = ttk.Label(time_settings, text="Width us")
         width_label.grid(row=3, column=0, sticky="w", pady=(4, 0))
         width_spin = ttk.Spinbox(
             time_settings, textvariable=vars_.width_us, from_=1, to=4294967295, width=12
         )
         width_spin.grid(row=3, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Output pulse width in microseconds for Delay mode and manual Fire.",
+            width_label,
+            width_spin,
+        )
         self.time_mode_widgets[index].extend(
             [time_title, edge_label, edge_combo, delay_label, delay_spin, width_label, width_spin]
         )
@@ -563,6 +635,12 @@ class TriggerConfigurator(tk.Tk):
             edge_settings, textvariable=vars_.edge_count, from_=1, to=EDGE_COUNT_MAX, width=12
         )
         edge_count_spin.grid(row=1, column=1, padx=(8, 0), pady=(8, 0), sticky="ew")
+        self._add_tooltip(
+            "Number of rising input edges to count before driving the output active in "
+            "Edge Count mode. Maximum is 65535.",
+            edge_count_label,
+            edge_count_spin,
+        )
         pulse_edges_label = ttk.Label(edge_settings, text="Width Edges")
         pulse_edges_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
         pulse_edges_spin = ttk.Spinbox(
@@ -573,29 +651,62 @@ class TriggerConfigurator(tk.Tk):
             width=12,
         )
         pulse_edges_spin.grid(row=2, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "How many additional rising input edges keep the output active after Count "
+            "is reached.",
+            pulse_edges_label,
+            pulse_edges_spin,
+        )
+        auto_clear_checkbox = ttk.Checkbutton(
+            edge_settings,
+            text="Auto Clear",
+            variable=vars_.auto_clear_edges,
+        )
+        auto_clear_checkbox.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._add_tooltip(
+            "After an edge-count output pulse finishes, wait the configured delay, "
+            "clear the PWM edge counter, and restart counting from zero.",
+            auto_clear_checkbox,
+        )
+        clear_delay_label = ttk.Label(edge_settings, text="Clear Delay ns")
+        clear_delay_label.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        clear_delay_spin = ttk.Spinbox(
+            edge_settings,
+            textvariable=vars_.auto_clear_delay_ns,
+            from_=0,
+            to=4_294_967_295,
+            width=12,
+        )
+        clear_delay_spin.grid(row=4, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Nanoseconds to wait after the edge-count pulse finishes before clearing "
+            "the counter when Auto Clear is enabled.",
+            clear_delay_label,
+            clear_delay_spin,
+        )
         ttk.Label(edge_settings, text="Edges Seen").grid(
-            row=3, column=0, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(edge_settings, textvariable=vars_.edge_seen).grid(
-            row=3, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
-        )
-        ttk.Label(edge_settings, text="Monitor Hz").grid(
-            row=4, column=0, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(edge_settings, textvariable=vars_.monitor_rate).grid(
-            row=4, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
-        )
-        ttk.Label(edge_settings, text="Monitor ns").grid(
             row=5, column=0, sticky="w", pady=(4, 0)
         )
-        ttk.Label(edge_settings, textvariable=vars_.monitor_period).grid(
+        ttk.Label(edge_settings, textvariable=vars_.edge_seen).grid(
             row=5, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
         )
-        ttk.Label(edge_settings, text="Monitor Edges").grid(
+        ttk.Label(edge_settings, text="Monitor Hz").grid(
             row=6, column=0, sticky="w", pady=(4, 0)
         )
-        ttk.Label(edge_settings, textvariable=vars_.monitor_edges).grid(
+        ttk.Label(edge_settings, textvariable=vars_.monitor_rate).grid(
             row=6, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
+        ttk.Label(edge_settings, text="Monitor ns").grid(
+            row=7, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(edge_settings, textvariable=vars_.monitor_period).grid(
+            row=7, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
+        ttk.Label(edge_settings, text="Monitor Edges").grid(
+            row=8, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(edge_settings, textvariable=vars_.monitor_edges).grid(
+            row=8, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
         )
         self.edge_count_mode_widgets[index].extend(
             [
@@ -604,26 +715,40 @@ class TriggerConfigurator(tk.Tk):
                 edge_count_spin,
                 pulse_edges_label,
                 pulse_edges_spin,
+                auto_clear_checkbox,
+                clear_delay_label,
+                clear_delay_spin,
             ]
         )
 
-        ttk.Label(output_settings, text="Output / Live").grid(
-            row=0, column=0, columnspan=2, sticky="w"
-        )
-        ttk.Label(output_settings, text="Idle").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Combobox(
+        output_title = ttk.Label(output_settings, text="Output / Live")
+        output_title.grid(row=0, column=0, columnspan=2, sticky="w")
+        idle_label = ttk.Label(output_settings, text="Idle")
+        idle_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        idle_combo = ttk.Combobox(
             output_settings, textvariable=vars_.idle, values=LEVEL_VALUES, state="readonly", width=8
-        ).grid(row=1, column=1, padx=(8, 0), pady=(8, 0), sticky="ew")
-        ttk.Label(output_settings, text="Active").grid(
-            row=2, column=0, sticky="w", pady=(4, 0)
         )
-        ttk.Combobox(
+        idle_combo.grid(row=1, column=1, padx=(8, 0), pady=(8, 0), sticky="ew")
+        self._add_tooltip(
+            "Output level used when the channel is not firing.",
+            idle_label,
+            idle_combo,
+        )
+        active_label = ttk.Label(output_settings, text="Active")
+        active_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        active_combo = ttk.Combobox(
             output_settings,
             textvariable=vars_.active,
             values=LEVEL_VALUES,
             state="readonly",
             width=8,
-        ).grid(row=2, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        )
+        active_combo.grid(row=2, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Output level driven during a trigger pulse.",
+            active_label,
+            active_combo,
+        )
         ttk.Label(output_settings, text="In").grid(
             row=3, column=0, sticky="w", pady=(4, 0)
         )
@@ -756,34 +881,84 @@ class TriggerConfigurator(tk.Tk):
             fields.columnconfigure(col, weight=1 if col % 2 == 1 else 0)
 
         field_specs = (
-            ("Channel", self.diag_channel_var, 1, CHANNEL_COUNT, 5),
-            ("Input GP", self.diag_input_gpio_var, 0, 29, 6),
-            ("Output GP", self.diag_output_gpio_var, 0, 29, 6),
-            ("Fire Edges", self.diag_fire_after_edges_var, 1, EDGE_COUNT_MAX, 10),
-            ("Width Edges", self.diag_pulse_width_edges_var, 1, EDGE_COUNT_MAX, 10),
-            ("Idle Gap us", self.diag_idle_gap_us_var, 1, 4_294_967_295, 10),
+            (
+                "Channel",
+                self.diag_channel_var,
+                1,
+                CHANNEL_COUNT,
+                5,
+                "Channel polarity/settings used for the diagnostic output.",
+            ),
+            (
+                "Input GP",
+                self.diag_input_gpio_var,
+                0,
+                29,
+                6,
+                "SWCLK/input GPIO for diagnostic counting. Must be an odd PWM B-capable pin.",
+            ),
+            (
+                "Output GP",
+                self.diag_output_gpio_var,
+                0,
+                29,
+                6,
+                "GPIO driven for the diagnostic pulse.",
+            ),
+            (
+                "Fire Edges",
+                self.diag_fire_after_edges_var,
+                1,
+                EDGE_COUNT_MAX,
+                10,
+                "Rising-edge count where the diagnostic output turns active.",
+            ),
+            (
+                "Width Edges",
+                self.diag_pulse_width_edges_var,
+                1,
+                EDGE_COUNT_MAX,
+                10,
+                "Rising-edge pulse width for the diagnostic output.",
+            ),
+            (
+                "Idle Gap us",
+                self.diag_idle_gap_us_var,
+                1,
+                4_294_967_295,
+                10,
+                "Diagnostic transaction ends after this many microseconds with no SWCLK edges.",
+            ),
         )
-        for index, (label, variable, minimum, maximum, width) in enumerate(field_specs):
-            ttk.Label(fields, text=label).grid(
+        for index, (label, variable, minimum, maximum, width, tooltip) in enumerate(field_specs):
+            label_widget = ttk.Label(fields, text=label)
+            label_widget.grid(
                 row=0,
                 column=index * 2,
                 padx=(0 if index == 0 else 12, 4),
                 sticky="w",
             )
-            ttk.Spinbox(
+            spinbox = ttk.Spinbox(
                 fields,
                 textvariable=variable,
                 from_=minimum,
                 to=maximum,
                 width=width,
-            ).grid(row=0, column=index * 2 + 1, sticky="ew")
+            )
+            spinbox.grid(row=0, column=index * 2 + 1, sticky="ew")
+            self._add_tooltip(tooltip, label_widget, spinbox)
 
         file_frame = ttk.Frame(frame)
         file_frame.grid(row=1, column=0, pady=(8, 0), sticky="ew")
         file_frame.columnconfigure(1, weight=1)
-        ttk.Label(file_frame, text="Output File").grid(row=0, column=0, padx=(0, 6), sticky="w")
-        ttk.Entry(file_frame, textvariable=self.diag_output_path_var).grid(
-            row=0, column=1, padx=(0, 8), sticky="ew"
+        output_file_label = ttk.Label(file_frame, text="Output File")
+        output_file_label.grid(row=0, column=0, padx=(0, 6), sticky="w")
+        output_file_entry = ttk.Entry(file_frame, textvariable=self.diag_output_path_var)
+        output_file_entry.grid(row=0, column=1, padx=(0, 8), sticky="ew")
+        self._add_tooltip(
+            "CSV path for saved diagnostic runs. Raw DIAG/DIAG_EVENT lines are saved beside it as .log.",
+            output_file_label,
+            output_file_entry,
         )
         ttk.Button(file_frame, text="Browse", command=self.browse_diag_output_path).grid(
             row=0, column=2
@@ -823,26 +998,64 @@ class TriggerConfigurator(tk.Tk):
             sweep_fields.columnconfigure(col, weight=1 if col % 2 == 1 else 0)
 
         sweep_specs = (
-            ("Start Edge", self.sweep_start_edge_var, 1, EDGE_COUNT_MAX, 10),
-            ("Stop Edge", self.sweep_stop_edge_var, 1, EDGE_COUNT_MAX, 10),
-            ("Step", self.sweep_step_var, 1, EDGE_COUNT_MAX, 8),
-            ("Width Edges", self.sweep_pulse_width_edges_var, 1, EDGE_COUNT_MAX, 10),
-            ("Idle Gap us", self.sweep_idle_gap_us_var, 1, 4_294_967_295, 10),
+            (
+                "Start Edge",
+                self.sweep_start_edge_var,
+                1,
+                EDGE_COUNT_MAX,
+                10,
+                "First trigger edge used by the sweep.",
+            ),
+            (
+                "Stop Edge",
+                self.sweep_stop_edge_var,
+                1,
+                EDGE_COUNT_MAX,
+                10,
+                "Last trigger edge allowed by the sweep.",
+            ),
+            (
+                "Step",
+                self.sweep_step_var,
+                1,
+                EDGE_COUNT_MAX,
+                8,
+                "Amount added to the trigger edge after each completed sweep run.",
+            ),
+            (
+                "Width Edges",
+                self.sweep_pulse_width_edges_var,
+                1,
+                EDGE_COUNT_MAX,
+                10,
+                "Rising-edge pulse width used for each sweep run.",
+            ),
+            (
+                "Idle Gap us",
+                self.sweep_idle_gap_us_var,
+                1,
+                4_294_967_295,
+                10,
+                "Sweep transaction ends after this many microseconds with no SWCLK edges.",
+            ),
         )
-        for index, (label, variable, minimum, maximum, width) in enumerate(sweep_specs):
-            ttk.Label(sweep_fields, text=label).grid(
+        for index, (label, variable, minimum, maximum, width, tooltip) in enumerate(sweep_specs):
+            label_widget = ttk.Label(sweep_fields, text=label)
+            label_widget.grid(
                 row=0,
                 column=index * 2,
                 padx=(0 if index == 0 else 12, 4),
                 sticky="w",
             )
-            ttk.Spinbox(
+            spinbox = ttk.Spinbox(
                 sweep_fields,
                 textvariable=variable,
                 from_=minimum,
                 to=maximum,
                 width=width,
-            ).grid(row=0, column=index * 2 + 1, sticky="ew")
+            )
+            spinbox.grid(row=0, column=index * 2 + 1, sticky="ew")
+            self._add_tooltip(tooltip, label_widget, spinbox)
 
         sweep_buttons = ttk.Frame(frame)
         sweep_buttons.grid(row=4, column=0, pady=(8, 0), sticky="ew")
@@ -1127,6 +1340,10 @@ class TriggerConfigurator(tk.Tk):
         vars_.width_us.set(data["width_us"])
         vars_.edge_count.set(data["edge_count"])
         vars_.pulse_width_edges.set(data["pulse_width_edges"])
+        if data.get("auto_clear_edges") is not None:
+            vars_.auto_clear_edges.set(data["auto_clear_edges"] == "1")
+        if data.get("auto_clear_delay_ns") is not None:
+            vars_.auto_clear_delay_ns.set(data["auto_clear_delay_ns"])
         vars_.edge_seen.set(data["edge_seen"])
         vars_.idle.set(data["idle"])
         vars_.active.set(data["active"])
@@ -1626,6 +1843,8 @@ class TriggerConfigurator(tk.Tk):
                 f"set {ch} width_us {config['width_us']}",
                 f"set {ch} edge_count {config['edge_count']}",
                 f"set {ch} pulse_width_edges {config['pulse_width_edges']}",
+                f"set {ch} auto_clear_edges {1 if config['auto_clear_edges'] else 0}",
+                f"set {ch} auto_clear_delay_ns {config['auto_clear_delay_ns']}",
             ]
         )
 
@@ -1683,6 +1902,9 @@ class TriggerConfigurator(tk.Tk):
         pulse_width_edges = self._read_edge_count(
             vars_.pulse_width_edges.get(), f"Channel {index + 1} pulse_width_edges"
         )
+        auto_clear_delay_ns = self._read_u32(
+            vars_.auto_clear_delay_ns.get(), f"Channel {index + 1} auto_clear_delay_ns"
+        )
 
         return {
             "enabled": vars_.enabled.get(),
@@ -1695,6 +1917,8 @@ class TriggerConfigurator(tk.Tk):
             "width_us": width_us,
             "edge_count": edge_count,
             "pulse_width_edges": pulse_width_edges,
+            "auto_clear_edges": vars_.auto_clear_edges.get(),
+            "auto_clear_delay_ns": auto_clear_delay_ns,
             "idle": idle,
             "active": active,
         }
@@ -1749,6 +1973,8 @@ class TriggerConfigurator(tk.Tk):
             "width_us",
             "edge_count",
             "pulse_width_edges",
+            "auto_clear_edges",
+            "auto_clear_delay_ns",
             "idle",
             "active",
         )
@@ -1800,7 +2026,7 @@ class TriggerConfigurator(tk.Tk):
         self._log(f"[OK] loaded profile: {path}")
 
     def _apply_profile_data(self, data: dict[str, Any]) -> None:
-        if data.get("schema") not in (1, 2, 3, PROFILE_SCHEMA):
+        if data.get("schema") not in (1, 2, 3, 4, PROFILE_SCHEMA):
             raise ValueError(f"Unsupported profile schema: {data.get('schema')!r}")
 
         if "clock_freq_khz" in data:
@@ -1862,6 +2088,15 @@ class TriggerConfigurator(tk.Tk):
                 self._read_edge_count(
                     channel.get("pulse_width_edges", DEFAULT_PULSE_WIDTH_EDGES),
                     "pulse_width_edges",
+                )
+            )
+        )
+        vars_.auto_clear_edges.set(bool(channel.get("auto_clear_edges", True)))
+        vars_.auto_clear_delay_ns.set(
+            str(
+                self._read_u32(
+                    channel.get("auto_clear_delay_ns", DEFAULT_AUTO_CLEAR_DELAY_NS),
+                    "auto_clear_delay_ns",
                 )
             )
         )

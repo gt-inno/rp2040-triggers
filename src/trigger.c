@@ -1,5 +1,6 @@
 #include "trigger.h"
 
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/pwm.h"
@@ -36,6 +37,8 @@ typedef struct {
     trigger_mode_t trigger_mode;
     uint32_t edge_count_target;
     uint32_t pulse_width_edges;
+    bool auto_clear_edges;
+    uint32_t auto_clear_delay_ns;
     volatile uint32_t edge_count_seen;
     volatile edge_counter_state_t edge_counter_state;
     uint pwm_slice;
@@ -106,7 +109,8 @@ typedef struct {
 
 #define DEFAULT_TRIGGER_CHANNEL(input, output) \
     {input, output, true, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, \
-     TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, false, true}
+     TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, \
+     TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, false, true}
 
 static const trigger_channel_config_t default_configs[TRIGGER_CHANNEL_COUNT] = {
     DEFAULT_TRIGGER_CHANNEL(2, 10),
@@ -116,10 +120,10 @@ static const trigger_channel_config_t default_configs[TRIGGER_CHANNEL_COUNT] = {
 };
 
 static trigger_channel_t channels[TRIGGER_CHANNEL_COUNT] = {
-    {2, 10, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
-    {3, 11, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
-    {4, 12, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
-    {5, 13, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {2, 10, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {3, 11, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {4, 12, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {5, 13, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
 };
 
 static input_monitor_t input_monitor = {
@@ -249,6 +253,23 @@ static bool output_gpio_allowed(uint ch, uint gpio) {
            !gpio_used_by_other_channel(gpio, ch);
 }
 
+static void busy_wait_ns(uint32_t delay_ns) {
+    if (delay_ns == 0) {
+        return;
+    }
+
+    uint64_t cycles = ((uint64_t)clock_get_hz(clk_sys) * delay_ns + 999999999ull) /
+                      1000000000ull;
+    if (cycles == 0) {
+        cycles = 1;
+    }
+    if (cycles > UINT32_MAX) {
+        cycles = UINT32_MAX;
+    }
+
+    busy_wait_at_least_cycles((uint32_t)cycles);
+}
+
 static void apply_config_values(const trigger_channel_config_t configs[TRIGGER_CHANNEL_COUNT]) {
     for (uint ch = 0; ch < TRIGGER_CHANNEL_COUNT; ch++) {
         channels[ch].input_gpio = configs[ch].input_gpio;
@@ -262,6 +283,8 @@ static void apply_config_values(const trigger_channel_config_t configs[TRIGGER_C
         channels[ch].trigger_mode = configs[ch].trigger_mode;
         channels[ch].edge_count_target = configs[ch].edge_count_target;
         channels[ch].pulse_width_edges = configs[ch].pulse_width_edges;
+        channels[ch].auto_clear_edges = configs[ch].auto_clear_edges;
+        channels[ch].auto_clear_delay_ns = configs[ch].auto_clear_delay_ns;
         channels[ch].edge_count_seen = 0;
         channels[ch].edge_counter_state = EDGE_COUNTER_IDLE;
         channels[ch].pwm_slice = pwm_gpio_to_slice_num(configs[ch].input_gpio);
@@ -436,6 +459,11 @@ static void start_edge_counter(uint ch) {
 
 static void restart_edge_counter_after_pulse(uint ch, uint slice) {
     pwm_set_enabled(slice, false);
+    pwm_set_irq_enabled(slice, false);
+    pwm_clear_irq(slice);
+    if (channels[ch].auto_clear_edges) {
+        busy_wait_ns(channels[ch].auto_clear_delay_ns);
+    }
     pwm_set_counter(slice, 0);
     pwm_set_wrap(slice, (uint16_t)(channels[ch].edge_count_target - 1u));
     channels[ch].edge_count_seen = 0;
@@ -1355,6 +1383,8 @@ bool trigger_get_config(uint ch, trigger_channel_config_t *config) {
     config->trigger_mode = channels[ch].trigger_mode;
     config->edge_count_target = channels[ch].edge_count_target;
     config->pulse_width_edges = channels[ch].pulse_width_edges;
+    config->auto_clear_edges = channels[ch].auto_clear_edges;
+    config->auto_clear_delay_ns = channels[ch].auto_clear_delay_ns;
     config->idle_high = channels[ch].idle_high;
     config->active_high = channels[ch].active_high;
     return true;
@@ -1427,6 +1457,8 @@ bool trigger_get_status(uint ch, trigger_channel_status_t *status) {
     status->trigger_mode = channels[ch].trigger_mode;
     status->edge_count_target = channels[ch].edge_count_target;
     status->pulse_width_edges = channels[ch].pulse_width_edges;
+    status->auto_clear_edges = channels[ch].auto_clear_edges;
+    status->auto_clear_delay_ns = channels[ch].auto_clear_delay_ns;
     status->edge_count_seen = edge_count_current(ch);
     status->idle_high = channels[ch].idle_high;
     status->active_high = channels[ch].active_high;
@@ -1580,6 +1612,24 @@ bool trigger_set_pulse_width_edges(uint ch, uint32_t edge_count) {
         start_edge_counter(ch);
     }
     restore_interrupts(irq_state);
+    return true;
+}
+
+bool trigger_set_auto_clear_edges(uint ch, bool enabled) {
+    if (!valid_channel(ch)) {
+        return false;
+    }
+
+    channels[ch].auto_clear_edges = enabled;
+    return true;
+}
+
+bool trigger_set_auto_clear_delay_ns(uint ch, uint32_t delay_ns) {
+    if (!valid_channel(ch)) {
+        return false;
+    }
+
+    channels[ch].auto_clear_delay_ns = delay_ns;
     return true;
 }
 

@@ -62,7 +62,9 @@ Each channel can run in `time` mode or `edge_count` mode. Time mode uses the exi
 
 The two trigger modes are mutually exclusive per channel. In the GUI, choose **Activation -> Delay** to use time/delay mode, or **Activation -> Edge Count** to use rising-edge counter mode. Selecting one mode disables/ignores the other mode for that channel. To disable a trigger channel completely, clear its **Enabled** checkbox. Over serial, use `set <ch> mode time`, `set <ch> mode edge_count`, or `set <ch> enabled 0`, then `save` if the change should persist after reboot.
 
-Edge-count mode uses RP2040 PWM hardware to count rising edges on the input pin. The `edge` and `delay_us` settings are not used in this mode; the trigger is rising-edge count based. After arming, it waits for the first SWCLK/input rising edge, counts rising edges, sets the output active when `edge_count` is reached, keeps the output active for `pulse_width_edges` more rising edges, then returns the output idle. It is not one-shot per arm: after each output pulse completes, the counter resets to zero and immediately waits for the next rising-edge sequence while the unit remains armed. The default edge-count target is `16742`; the default pulse width is `100` edges.
+Edge-count mode uses RP2040 PWM hardware to count rising edges on the input pin. The `edge` and `delay_us` settings are not used in this mode; the trigger is rising-edge count based. After arming, it waits for the first SWCLK/input rising edge, counts rising edges, sets the output active when `edge_count` is reached, keeps the output active for `pulse_width_edges` more rising edges, then returns the output idle. It is not one-shot per arm: after each output pulse completes, the counter resets to zero and waits for the next rising-edge sequence while the unit remains armed. The default edge-count target is `16742`; the default pulse width is `100` edges.
+
+The GUI's **Auto Clear** option is enabled by default for edge-count mode. After an edge-count output pulse finishes, the firmware waits `auto_clear_delay_ns` before clearing/restarting the PWM edge counter. The default delay is `10000000 ns`. This is intended to discard tail-edge residue after a trigger while keeping the existing repeating edge-count behavior. Over serial, use `set <ch> auto_clear_edges 0|1` and `set <ch> auto_clear_delay_ns <value>`.
 
 The edge-count values are capped at `65535` for both `edge_count` and `pulse_width_edges`. This is a hardware limit from the RP2040 PWM counter/wrap register, which is 16-bit. If SWCLK/input edges stop while the output is active, the output remains active until `pulse_width_edges` more rising edges arrive, or until the channel is disabled, reconfigured, or the unit is disarmed.
 
@@ -122,6 +124,8 @@ set 1 delay_us 50
 set 1 width_us 100
 set 1 edge_count 16742
 set 1 pulse_width_edges 100
+set 1 auto_clear_edges 1
+set 1 auto_clear_delay_ns 10000000
 set 1 enabled 1
 set 1 idle low
 set 1 active high

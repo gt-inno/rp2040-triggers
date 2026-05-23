@@ -87,6 +87,8 @@ static void print_help(void) {
     printf("  set <ch> width_us <value>\n");
     printf("  set <ch> edge_count <1-65535>\n");
     printf("  set <ch> pulse_width_edges <1-65535>\n");
+    printf("  set <ch> auto_clear_edges 0|1\n");
+    printf("  set <ch> auto_clear_delay_ns <value>\n");
     printf("  set <ch> enabled 0|1\n");
     printf("  set <ch> idle low|high\n");
     printf("  set <ch> active low|high\n");
@@ -117,7 +119,7 @@ void command_print_status(void) {
         }
 
         printf(
-            "CH%u: enabled=%u input=GP%u output=GP%u mode=%s edge=%s delay_us=%lu width_us=%lu edge_count=%lu pulse_width_edges=%lu edge_seen=%lu idle=%s active=%s pending=%u events=%lu last_event_us=%llu input_level=%u output_level=%u pull=%s\n",
+            "CH%u: enabled=%u input=GP%u output=GP%u mode=%s edge=%s delay_us=%lu width_us=%lu edge_count=%lu pulse_width_edges=%lu auto_clear_edges=%u auto_clear_delay_ns=%lu edge_seen=%lu idle=%s active=%s pending=%u events=%lu last_event_us=%llu input_level=%u output_level=%u pull=%s\n",
             ch + 1,
             status.enabled ? 1 : 0,
             status.input_gpio,
@@ -128,6 +130,8 @@ void command_print_status(void) {
             (unsigned long)status.width_us,
             (unsigned long)status.edge_count_target,
             (unsigned long)status.pulse_width_edges,
+            status.auto_clear_edges ? 1 : 0,
+            (unsigned long)status.auto_clear_delay_ns,
             (unsigned long)status.edge_count_seen,
             trigger_level_name(status.idle_high),
             trigger_level_name(status.active_high),
@@ -423,6 +427,26 @@ static void process_set_command(int ch, const char *key, const char *value) {
 
         mark_settings_dirty();
         printf("[OK] CH%d pulse_width_edges=%lu\n", ch + 1, (unsigned long)edge_count);
+        return;
+    }
+
+    if (strcmp(key, "auto_clear_edges") == 0 || strcmp(key, "auto_clear") == 0) {
+        bool enabled = atoi(value) != 0;
+        trigger_set_auto_clear_edges((uint)ch, enabled);
+        mark_settings_dirty();
+        printf("[OK] CH%d auto_clear_edges=%u\n", ch + 1, enabled ? 1 : 0);
+        return;
+    }
+
+    if (strcmp(key, "auto_clear_delay_ns") == 0 || strcmp(key, "clear_delay_ns") == 0) {
+        uint32_t delay_ns = parse_u32(value);
+        if (!trigger_set_auto_clear_delay_ns((uint)ch, delay_ns)) {
+            printf("[ERR] auto_clear_delay_ns must be 0-4294967295\n");
+            return;
+        }
+
+        mark_settings_dirty();
+        printf("[OK] CH%d auto_clear_delay_ns=%lu\n", ch + 1, (unsigned long)delay_ns);
         return;
     }
 

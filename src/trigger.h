@@ -10,6 +10,8 @@
 #define TRIGGER_EDGE_COUNT_DEFAULT 16742u
 #define TRIGGER_PULSE_WIDTH_EDGES_DEFAULT 100u
 #define TRIGGER_EDGE_COUNT_MAX 65535u
+#define TRIGGER_AUTO_CLEAR_EDGES_DEFAULT true
+#define TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT 10000000u
 #define TRIGGER_DIAG_FIRE_AFTER_EDGES_DEFAULT 4220u
 #define TRIGGER_DIAG_PULSE_WIDTH_EDGES_DEFAULT 120u
 #define TRIGGER_DIAG_IDLE_GAP_US_DEFAULT 50u
@@ -46,6 +48,8 @@ typedef struct {
     trigger_mode_t trigger_mode;
     uint32_t edge_count_target;
     uint32_t pulse_width_edges;
+    bool auto_clear_edges;
+    uint32_t auto_clear_delay_ns;
     bool idle_high;
     bool active_high;
 } trigger_channel_config_t;
@@ -66,6 +70,8 @@ typedef struct {
     trigger_mode_t trigger_mode;
     uint32_t edge_count_target;
     uint32_t pulse_width_edges;
+    bool auto_clear_edges;
+    uint32_t auto_clear_delay_ns;
     uint32_t edge_count_seen;
     bool idle_high;
     bool active_high;
@@ -132,6 +138,8 @@ bool trigger_set_width_us(uint ch, uint32_t width_us);
 bool trigger_set_mode(uint ch, trigger_mode_t mode);
 bool trigger_set_edge_count_target(uint ch, uint32_t edge_count);
 bool trigger_set_pulse_width_edges(uint ch, uint32_t edge_count);
+bool trigger_set_auto_clear_edges(uint ch, bool enabled);
+bool trigger_set_auto_clear_delay_ns(uint ch, uint32_t delay_ns);
 bool trigger_clear_edge_seen(uint ch);
 bool trigger_set_enabled(uint ch, bool enabled);
 bool trigger_set_idle_high(uint ch, bool high);
