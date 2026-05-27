@@ -12,6 +12,10 @@
 #define TRIGGER_EDGE_COUNT_MAX 65535u
 #define TRIGGER_AUTO_CLEAR_EDGES_DEFAULT true
 #define TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT 10000000u
+#define TRIGGER_STEP_REDUCE_ENABLED_DEFAULT false
+#define TRIGGER_STEP_REDUCE_EVERY_DEFAULT 4u
+#define TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT 1u
+#define TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT 1u
 #define TRIGGER_DIAG_FIRE_AFTER_EDGES_DEFAULT 4220u
 #define TRIGGER_DIAG_PULSE_WIDTH_EDGES_DEFAULT 120u
 #define TRIGGER_DIAG_IDLE_GAP_US_DEFAULT 50u
@@ -50,6 +54,10 @@ typedef struct {
     uint32_t pulse_width_edges;
     bool auto_clear_edges;
     uint32_t auto_clear_delay_ns;
+    bool step_reduce_enabled;
+    uint32_t step_reduce_every;
+    uint32_t step_reduce_edge_delta;
+    uint32_t step_reduce_delay_ns;
     bool idle_high;
     bool active_high;
 } trigger_channel_config_t;
@@ -72,6 +80,13 @@ typedef struct {
     uint32_t pulse_width_edges;
     bool auto_clear_edges;
     uint32_t auto_clear_delay_ns;
+    bool step_reduce_enabled;
+    uint32_t step_reduce_every;
+    uint32_t step_reduce_edge_delta;
+    uint32_t step_reduce_delay_ns;
+    uint32_t step_reduce_count;
+    uint32_t step_current_edge_count;
+    uint32_t step_current_delay_ns;
     uint32_t edge_count_seen;
     bool idle_high;
     bool active_high;
@@ -140,6 +155,10 @@ bool trigger_set_edge_count_target(uint ch, uint32_t edge_count);
 bool trigger_set_pulse_width_edges(uint ch, uint32_t edge_count);
 bool trigger_set_auto_clear_edges(uint ch, bool enabled);
 bool trigger_set_auto_clear_delay_ns(uint ch, uint32_t delay_ns);
+bool trigger_set_step_reduce_enabled(uint ch, bool enabled);
+bool trigger_set_step_reduce_every(uint ch, uint32_t every);
+bool trigger_set_step_reduce_edge_delta(uint ch, uint32_t delta);
+bool trigger_set_step_reduce_delay_ns(uint ch, uint32_t delay_ns);
 bool trigger_clear_edge_seen(uint ch);
 bool trigger_set_enabled(uint ch, bool enabled);
 bool trigger_set_idle_high(uint ch, bool high);

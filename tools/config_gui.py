@@ -26,13 +26,16 @@ TRIGGER_MODE_VALUES = ("time", "edge_count")
 EDGE_VALUES = ("rising", "falling", "both")
 LEVEL_VALUES = ("low", "high")
 PULL_VALUES = ("down", "up", "none")
-PROFILE_SCHEMA = 5
+PROFILE_SCHEMA = 6
 DEFAULT_CLOCK_FREQ_KHZ = 125000
 CLOCK_FREQ_MIN_KHZ = 48000
 CLOCK_FREQ_MAX_KHZ = 200000
 DEFAULT_EDGE_COUNT = 16742
 DEFAULT_PULSE_WIDTH_EDGES = 100
 DEFAULT_AUTO_CLEAR_DELAY_NS = 10000000
+DEFAULT_STEP_REDUCE_EVERY = 4
+DEFAULT_STEP_REDUCE_EDGE_DELTA = 1
+DEFAULT_STEP_REDUCE_DELAY_NS = 1
 EDGE_COUNT_MAX = 65535
 TRIGGER_PANEL_HEIGHT = 220
 DEFAULT_DIAG_CHANNEL = 1
@@ -98,6 +101,13 @@ STATUS_RE = re.compile(
     r"pulse_width_edges=(?P<pulse_width_edges>\d+)\s+"
     r"(?:auto_clear_edges=(?P<auto_clear_edges>[01])\s+"
     r"auto_clear_delay_ns=(?P<auto_clear_delay_ns>\d+)\s+)?"
+    r"(?:step_reduce_enabled=(?P<step_reduce_enabled>[01])\s+"
+    r"step_reduce_every=(?P<step_reduce_every>\d+)\s+"
+    r"step_reduce_edge_delta=(?P<step_reduce_edge_delta>\d+)\s+"
+    r"step_reduce_delay_ns=(?P<step_reduce_delay_ns>\d+)\s+"
+    r"step_reduce_count=(?P<step_reduce_count>\d+)\s+"
+    r"step_current_edge_count=(?P<step_current_edge_count>\d+)\s+"
+    r"step_current_delay_ns=(?P<step_current_delay_ns>\d+)\s+)?"
     r"edge_seen=(?P<edge_seen>\d+)\s+"
     r"idle=(?P<idle>low|high)\s+"
     r"active=(?P<active>low|high)\s+"
@@ -175,6 +185,13 @@ class ChannelVars:
     pulse_width_edges: tk.StringVar
     auto_clear_edges: tk.BooleanVar
     auto_clear_delay_ns: tk.StringVar
+    step_reduce_enabled: tk.BooleanVar
+    step_reduce_every: tk.StringVar
+    step_reduce_edge_delta: tk.StringVar
+    step_reduce_delay_ns: tk.StringVar
+    step_reduce_count: tk.StringVar
+    step_current_edge_count: tk.StringVar
+    step_current_delay_ns: tk.StringVar
     idle: tk.StringVar
     active: tk.StringVar
     input_level: tk.StringVar
@@ -276,6 +293,13 @@ class TriggerConfigurator(tk.Tk):
             pulse_width_edges=tk.StringVar(value=str(DEFAULT_PULSE_WIDTH_EDGES)),
             auto_clear_edges=tk.BooleanVar(value=True),
             auto_clear_delay_ns=tk.StringVar(value=str(DEFAULT_AUTO_CLEAR_DELAY_NS)),
+            step_reduce_enabled=tk.BooleanVar(value=False),
+            step_reduce_every=tk.StringVar(value=str(DEFAULT_STEP_REDUCE_EVERY)),
+            step_reduce_edge_delta=tk.StringVar(value=str(DEFAULT_STEP_REDUCE_EDGE_DELTA)),
+            step_reduce_delay_ns=tk.StringVar(value=str(DEFAULT_STEP_REDUCE_DELAY_NS)),
+            step_reduce_count=tk.StringVar(value="0"),
+            step_current_edge_count=tk.StringVar(value=str(DEFAULT_EDGE_COUNT)),
+            step_current_delay_ns=tk.StringVar(value="0"),
             idle=tk.StringVar(value="low"),
             active=tk.StringVar(value="high"),
             input_level=tk.StringVar(value="0"),
@@ -623,6 +647,91 @@ class TriggerConfigurator(tk.Tk):
             width_label,
             width_spin,
         )
+
+        step_title = ttk.Label(time_settings, text="Step Reduce")
+        step_title.grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        self._add_tooltip(
+            "Optional runtime sweep. When enabled, the firmware counts completed trigger "
+            "pulses on this channel and reduces the active timing after each group.",
+            step_title,
+        )
+        step_checkbox = ttk.Checkbutton(
+            time_settings,
+            text="Enabled",
+            variable=vars_.step_reduce_enabled,
+        )
+        step_checkbox.grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self._add_tooltip(
+            "Disabled by default. When enabled, the reduction starts from the saved base "
+            "Count or Delay each time the firmware is armed.",
+            step_checkbox,
+        )
+        step_every_label = ttk.Label(time_settings, text="Every")
+        step_every_label.grid(row=7, column=0, sticky="w", pady=(4, 0))
+        step_every_spin = ttk.Spinbox(
+            time_settings,
+            textvariable=vars_.step_reduce_every,
+            from_=1,
+            to=4_294_967_295,
+            width=12,
+        )
+        step_every_spin.grid(row=7, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "X value: after this many completed trigger pulses, apply one reduction step "
+            "to the next trigger.",
+            step_every_label,
+            step_every_spin,
+        )
+        step_edge_label = ttk.Label(time_settings, text="Edge -Y")
+        step_edge_label.grid(row=8, column=0, sticky="w", pady=(4, 0))
+        step_edge_spin = ttk.Spinbox(
+            time_settings,
+            textvariable=vars_.step_reduce_edge_delta,
+            from_=0,
+            to=EDGE_COUNT_MAX,
+            width=12,
+        )
+        step_edge_spin.grid(row=8, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Y value for Edge Count mode. For example, Every 4 and Edge -Y 1 makes the "
+            "next edge threshold one edge earlier after every four completed pulses.",
+            step_edge_label,
+            step_edge_spin,
+        )
+        step_delay_label = ttk.Label(time_settings, text="Delay -ns")
+        step_delay_label.grid(row=9, column=0, sticky="w", pady=(4, 0))
+        step_delay_spin = ttk.Spinbox(
+            time_settings,
+            textvariable=vars_.step_reduce_delay_ns,
+            from_=0,
+            to=4_294_967_295,
+            width=12,
+        )
+        step_delay_spin.grid(row=9, column=1, padx=(8, 0), pady=(4, 0), sticky="ew")
+        self._add_tooltip(
+            "Y value for Delay mode, in nanoseconds. The base Delay field is still set in "
+            "microseconds; this step value subtracts from the live runtime delay.",
+            step_delay_label,
+            step_delay_spin,
+        )
+        ttk.Label(time_settings, text="Step Count").grid(
+            row=10, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(time_settings, textvariable=vars_.step_reduce_count).grid(
+            row=10, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
+        ttk.Label(time_settings, text="Current Edge").grid(
+            row=11, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(time_settings, textvariable=vars_.step_current_edge_count).grid(
+            row=11, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
+        ttk.Label(time_settings, text="Current ns").grid(
+            row=12, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(time_settings, textvariable=vars_.step_current_delay_ns).grid(
+            row=12, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
         self.time_mode_widgets[index].extend(
             [time_title, edge_label, edge_combo, delay_label, delay_spin, width_label, width_spin]
         )
@@ -778,6 +887,16 @@ class TriggerConfigurator(tk.Tk):
         )
         ttk.Label(output_settings, textvariable=vars_.last_event_us).grid(
             row=7, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
+        current_edge_label = ttk.Label(output_settings, text="Current Count")
+        current_edge_label.grid(row=8, column=0, sticky="w", pady=(4, 0))
+        current_edge_value = ttk.Label(output_settings, textvariable=vars_.step_current_edge_count)
+        current_edge_value.grid(row=8, column=1, padx=(8, 0), pady=(4, 0), sticky="w")
+        self._add_tooltip(
+            "Live edge-count trigger threshold currently used by the firmware. "
+            "When Step Reduce is enabled, this value shows the reduced/new threshold.",
+            current_edge_label,
+            current_edge_value,
         )
 
         actions.columnconfigure(0, weight=1)
@@ -1344,6 +1463,20 @@ class TriggerConfigurator(tk.Tk):
             vars_.auto_clear_edges.set(data["auto_clear_edges"] == "1")
         if data.get("auto_clear_delay_ns") is not None:
             vars_.auto_clear_delay_ns.set(data["auto_clear_delay_ns"])
+        if data.get("step_reduce_enabled") is not None:
+            vars_.step_reduce_enabled.set(data["step_reduce_enabled"] == "1")
+        if data.get("step_reduce_every") is not None:
+            vars_.step_reduce_every.set(data["step_reduce_every"])
+        if data.get("step_reduce_edge_delta") is not None:
+            vars_.step_reduce_edge_delta.set(data["step_reduce_edge_delta"])
+        if data.get("step_reduce_delay_ns") is not None:
+            vars_.step_reduce_delay_ns.set(data["step_reduce_delay_ns"])
+        if data.get("step_reduce_count") is not None:
+            vars_.step_reduce_count.set(data["step_reduce_count"])
+        if data.get("step_current_edge_count") is not None:
+            vars_.step_current_edge_count.set(data["step_current_edge_count"])
+        if data.get("step_current_delay_ns") is not None:
+            vars_.step_current_delay_ns.set(data["step_current_delay_ns"])
         vars_.edge_seen.set(data["edge_seen"])
         vars_.idle.set(data["idle"])
         vars_.active.set(data["active"])
@@ -1845,6 +1978,10 @@ class TriggerConfigurator(tk.Tk):
                 f"set {ch} pulse_width_edges {config['pulse_width_edges']}",
                 f"set {ch} auto_clear_edges {1 if config['auto_clear_edges'] else 0}",
                 f"set {ch} auto_clear_delay_ns {config['auto_clear_delay_ns']}",
+                f"set {ch} step_reduce_enabled {1 if config['step_reduce_enabled'] else 0}",
+                f"set {ch} step_reduce_every {config['step_reduce_every']}",
+                f"set {ch} step_reduce_edge_delta {config['step_reduce_edge_delta']}",
+                f"set {ch} step_reduce_delay_ns {config['step_reduce_delay_ns']}",
             ]
         )
 
@@ -1905,6 +2042,22 @@ class TriggerConfigurator(tk.Tk):
         auto_clear_delay_ns = self._read_u32(
             vars_.auto_clear_delay_ns.get(), f"Channel {index + 1} auto_clear_delay_ns"
         )
+        step_reduce_every = self._read_u32(
+            vars_.step_reduce_every.get(), f"Channel {index + 1} step_reduce_every"
+        )
+        if step_reduce_every == 0:
+            raise ValueError(f"Channel {index + 1}: step_reduce_every must be greater than 0.")
+        step_reduce_edge_delta = self._read_u32(
+            vars_.step_reduce_edge_delta.get(),
+            f"Channel {index + 1} step_reduce_edge_delta",
+        )
+        if step_reduce_edge_delta > EDGE_COUNT_MAX:
+            raise ValueError(
+                f"Channel {index + 1}: step_reduce_edge_delta must be between 0 and {EDGE_COUNT_MAX}."
+            )
+        step_reduce_delay_ns = self._read_u32(
+            vars_.step_reduce_delay_ns.get(), f"Channel {index + 1} step_reduce_delay_ns"
+        )
 
         return {
             "enabled": vars_.enabled.get(),
@@ -1919,6 +2072,10 @@ class TriggerConfigurator(tk.Tk):
             "pulse_width_edges": pulse_width_edges,
             "auto_clear_edges": vars_.auto_clear_edges.get(),
             "auto_clear_delay_ns": auto_clear_delay_ns,
+            "step_reduce_enabled": vars_.step_reduce_enabled.get(),
+            "step_reduce_every": step_reduce_every,
+            "step_reduce_edge_delta": step_reduce_edge_delta,
+            "step_reduce_delay_ns": step_reduce_delay_ns,
             "idle": idle,
             "active": active,
         }
@@ -1975,6 +2132,10 @@ class TriggerConfigurator(tk.Tk):
             "pulse_width_edges",
             "auto_clear_edges",
             "auto_clear_delay_ns",
+            "step_reduce_enabled",
+            "step_reduce_every",
+            "step_reduce_edge_delta",
+            "step_reduce_delay_ns",
             "idle",
             "active",
         )
@@ -2026,7 +2187,7 @@ class TriggerConfigurator(tk.Tk):
         self._log(f"[OK] loaded profile: {path}")
 
     def _apply_profile_data(self, data: dict[str, Any]) -> None:
-        if data.get("schema") not in (1, 2, 3, 4, PROFILE_SCHEMA):
+        if data.get("schema") not in (1, 2, 3, 4, 5, PROFILE_SCHEMA):
             raise ValueError(f"Unsupported profile schema: {data.get('schema')!r}")
 
         if "clock_freq_khz" in data:
@@ -2100,6 +2261,34 @@ class TriggerConfigurator(tk.Tk):
                 )
             )
         )
+        vars_.step_reduce_enabled.set(bool(channel.get("step_reduce_enabled", False)))
+        step_reduce_every = self._read_u32(
+            channel.get("step_reduce_every", DEFAULT_STEP_REDUCE_EVERY),
+            "step_reduce_every",
+        )
+        if step_reduce_every == 0:
+            raise ValueError(f"Channel {index + 1}: step_reduce_every must be greater than 0.")
+        vars_.step_reduce_every.set(str(step_reduce_every))
+        step_reduce_edge_delta = self._read_u32(
+            channel.get("step_reduce_edge_delta", DEFAULT_STEP_REDUCE_EDGE_DELTA),
+            "step_reduce_edge_delta",
+        )
+        if step_reduce_edge_delta > EDGE_COUNT_MAX:
+            raise ValueError(
+                f"Channel {index + 1}: step_reduce_edge_delta must be between 0 and {EDGE_COUNT_MAX}."
+            )
+        vars_.step_reduce_edge_delta.set(str(step_reduce_edge_delta))
+        vars_.step_reduce_delay_ns.set(
+            str(
+                self._read_u32(
+                    channel.get("step_reduce_delay_ns", DEFAULT_STEP_REDUCE_DELAY_NS),
+                    "step_reduce_delay_ns",
+                )
+            )
+        )
+        vars_.step_reduce_count.set("0")
+        vars_.step_current_edge_count.set(vars_.edge_count.get())
+        vars_.step_current_delay_ns.set(str(self._read_u32(vars_.delay_us.get(), "delay_us") * 1000))
         vars_.idle.set(idle)
         vars_.active.set(active)
 

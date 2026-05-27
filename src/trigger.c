@@ -39,6 +39,14 @@ typedef struct {
     uint32_t pulse_width_edges;
     bool auto_clear_edges;
     uint32_t auto_clear_delay_ns;
+    bool step_reduce_enabled;
+    uint32_t step_reduce_every;
+    uint32_t step_reduce_edge_delta;
+    uint32_t step_reduce_delay_ns;
+    volatile uint32_t step_reduce_count;
+    volatile uint32_t current_edge_count_target;
+    volatile uint32_t current_delay_ns;
+    uint32_t delay_remainder_ns;
     volatile uint32_t edge_count_seen;
     volatile edge_counter_state_t edge_counter_state;
     uint pwm_slice;
@@ -110,7 +118,9 @@ typedef struct {
 #define DEFAULT_TRIGGER_CHANNEL(input, output) \
     {input, output, true, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, \
      TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, \
-     TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, false, true}
+     TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, \
+     TRIGGER_STEP_REDUCE_ENABLED_DEFAULT, TRIGGER_STEP_REDUCE_EVERY_DEFAULT, \
+     TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT, TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT, false, true}
 
 static const trigger_channel_config_t default_configs[TRIGGER_CHANNEL_COUNT] = {
     DEFAULT_TRIGGER_CHANNEL(2, 10),
@@ -120,10 +130,10 @@ static const trigger_channel_config_t default_configs[TRIGGER_CHANNEL_COUNT] = {
 };
 
 static trigger_channel_t channels[TRIGGER_CHANNEL_COUNT] = {
-    {2, 10, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
-    {3, 11, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
-    {4, 12, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
-    {5, 13, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {2, 10, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, TRIGGER_STEP_REDUCE_ENABLED_DEFAULT, TRIGGER_STEP_REDUCE_EVERY_DEFAULT, TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT, TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT, 0, TRIGGER_EDGE_COUNT_DEFAULT, 0, 0, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {3, 11, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, TRIGGER_STEP_REDUCE_ENABLED_DEFAULT, TRIGGER_STEP_REDUCE_EVERY_DEFAULT, TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT, TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT, 0, TRIGGER_EDGE_COUNT_DEFAULT, 0, 0, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {4, 12, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, TRIGGER_STEP_REDUCE_ENABLED_DEFAULT, TRIGGER_STEP_REDUCE_EVERY_DEFAULT, TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT, TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT, 0, TRIGGER_EDGE_COUNT_DEFAULT, 0, 0, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
+    {5, 13, true, false, 0, 0, TRIGGER_EDGE_RISING, TRIGGER_PULL_DOWN, 0, 100, TRIGGER_MODE_TIME, TRIGGER_EDGE_COUNT_DEFAULT, TRIGGER_PULSE_WIDTH_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_EDGES_DEFAULT, TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT, TRIGGER_STEP_REDUCE_ENABLED_DEFAULT, TRIGGER_STEP_REDUCE_EVERY_DEFAULT, TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT, TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT, 0, TRIGGER_EDGE_COUNT_DEFAULT, 0, 0, 0, EDGE_COUNTER_IDLE, 0, false, true, 0, 0},
 };
 
 static input_monitor_t input_monitor = {
@@ -270,6 +280,72 @@ static void busy_wait_ns(uint32_t delay_ns) {
     busy_wait_at_least_cycles((uint32_t)cycles);
 }
 
+static uint32_t delay_us_to_ns_saturated(uint32_t delay_us) {
+    if (delay_us > UINT32_MAX / 1000u) {
+        return UINT32_MAX;
+    }
+
+    return delay_us * 1000u;
+}
+
+static void reset_step_reduce_runtime(uint ch) {
+    channels[ch].step_reduce_count = 0;
+    channels[ch].current_edge_count_target = channels[ch].edge_count_target;
+    channels[ch].current_delay_ns = delay_us_to_ns_saturated(channels[ch].delay_us);
+    channels[ch].delay_remainder_ns = 0;
+}
+
+static uint32_t active_edge_count_target(uint ch) {
+    uint32_t target = channels[ch].current_edge_count_target;
+    if (target == 0 || target > TRIGGER_EDGE_COUNT_MAX) {
+        target = channels[ch].edge_count_target;
+    }
+
+    return target;
+}
+
+static uint32_t active_delay_ns(uint ch) {
+    if (channels[ch].step_reduce_enabled) {
+        return channels[ch].current_delay_ns;
+    }
+
+    return delay_us_to_ns_saturated(channels[ch].delay_us);
+}
+
+static void note_channel_trigger_complete(uint ch) {
+    if (!valid_channel(ch) ||
+        !channels[ch].step_reduce_enabled ||
+        channels[ch].step_reduce_every == 0) {
+        return;
+    }
+
+    channels[ch].step_reduce_count++;
+    if ((channels[ch].step_reduce_count % channels[ch].step_reduce_every) != 0) {
+        return;
+    }
+
+    if (channels[ch].trigger_mode == TRIGGER_MODE_EDGE_COUNT &&
+        channels[ch].step_reduce_edge_delta > 0) {
+        uint32_t target = active_edge_count_target(ch);
+        if (target > channels[ch].step_reduce_edge_delta) {
+            channels[ch].current_edge_count_target = target - channels[ch].step_reduce_edge_delta;
+        } else {
+            channels[ch].current_edge_count_target = 1;
+        }
+        return;
+    }
+
+    if (channels[ch].trigger_mode == TRIGGER_MODE_TIME &&
+        channels[ch].step_reduce_delay_ns > 0) {
+        uint32_t delay_ns = channels[ch].current_delay_ns;
+        if (delay_ns > channels[ch].step_reduce_delay_ns) {
+            channels[ch].current_delay_ns = delay_ns - channels[ch].step_reduce_delay_ns;
+        } else {
+            channels[ch].current_delay_ns = 0;
+        }
+    }
+}
+
 static void apply_config_values(const trigger_channel_config_t configs[TRIGGER_CHANNEL_COUNT]) {
     for (uint ch = 0; ch < TRIGGER_CHANNEL_COUNT; ch++) {
         channels[ch].input_gpio = configs[ch].input_gpio;
@@ -285,6 +361,11 @@ static void apply_config_values(const trigger_channel_config_t configs[TRIGGER_C
         channels[ch].pulse_width_edges = configs[ch].pulse_width_edges;
         channels[ch].auto_clear_edges = configs[ch].auto_clear_edges;
         channels[ch].auto_clear_delay_ns = configs[ch].auto_clear_delay_ns;
+        channels[ch].step_reduce_enabled = configs[ch].step_reduce_enabled;
+        channels[ch].step_reduce_every = configs[ch].step_reduce_every;
+        channels[ch].step_reduce_edge_delta = configs[ch].step_reduce_edge_delta;
+        channels[ch].step_reduce_delay_ns = configs[ch].step_reduce_delay_ns;
+        reset_step_reduce_runtime(ch);
         channels[ch].edge_count_seen = 0;
         channels[ch].edge_counter_state = EDGE_COUNTER_IDLE;
         channels[ch].pwm_slice = pwm_gpio_to_slice_num(configs[ch].input_gpio);
@@ -329,7 +410,7 @@ static void configure_edge_count_input(uint ch) {
     pwm_clear_irq(slice);
     pwm_config_set_clkdiv_mode(&config, PWM_DIV_B_RISING);
     pwm_config_set_clkdiv_int(&config, 1);
-    pwm_config_set_wrap(&config, (uint16_t)(channels[ch].edge_count_target - 1u));
+    pwm_config_set_wrap(&config, (uint16_t)(active_edge_count_target(ch) - 1u));
     pwm_init(slice, &config, false);
     pwm_set_counter(slice, 0);
 }
@@ -366,6 +447,7 @@ static int64_t end_pulse_alarm(alarm_id_t id, void *user_data) {
     set_output_idle(ch);
     channels[ch].pending = false;
     channels[ch].end_alarm = 0;
+    note_channel_trigger_complete(ch);
     return 0;
 }
 
@@ -374,11 +456,16 @@ static int64_t start_pulse_alarm(alarm_id_t id, void *user_data) {
 
     uint ch = (uint)(uintptr_t)user_data;
     channels[ch].start_alarm = 0;
+    if (channels[ch].delay_remainder_ns != 0) {
+        busy_wait_ns(channels[ch].delay_remainder_ns);
+        channels[ch].delay_remainder_ns = 0;
+    }
     set_output_active(ch);
 
     if (channels[ch].width_us == 0) {
         set_output_idle(ch);
         channels[ch].pending = false;
+        note_channel_trigger_complete(ch);
         return 0;
     }
 
@@ -417,11 +504,30 @@ static void schedule_channel_pulse(uint ch) {
     channels[ch].last_event_us = time_us_64();
     status_led_blink_triggered();
 
-    if (channels[ch].delay_us == 0) {
+    if (!channels[ch].step_reduce_enabled) {
+        channels[ch].delay_remainder_ns = 0;
+        if (channels[ch].delay_us == 0) {
+            start_pulse_alarm(0, (void *)(uintptr_t)ch);
+        } else {
+            channels[ch].start_alarm = add_alarm_in_us(
+                (int64_t)channels[ch].delay_us,
+                start_pulse_alarm,
+                (void *)(uintptr_t)ch,
+                true
+            );
+        }
+        return;
+    }
+
+    uint32_t delay_ns = active_delay_ns(ch);
+    uint32_t delay_us = delay_ns / 1000u;
+    channels[ch].delay_remainder_ns = delay_ns % 1000u;
+
+    if (delay_us == 0) {
         start_pulse_alarm(0, (void *)(uintptr_t)ch);
     } else {
         channels[ch].start_alarm = add_alarm_in_us(
-            (int64_t)channels[ch].delay_us,
+            (int64_t)delay_us,
             start_pulse_alarm,
             (void *)(uintptr_t)ch,
             true
@@ -450,7 +556,7 @@ static void start_edge_counter(uint ch) {
     pwm_set_enabled(channels[ch].pwm_slice, false);
     pwm_clear_irq(channels[ch].pwm_slice);
     pwm_set_counter(channels[ch].pwm_slice, 0);
-    pwm_set_wrap(channels[ch].pwm_slice, (uint16_t)(channels[ch].edge_count_target - 1u));
+    pwm_set_wrap(channels[ch].pwm_slice, (uint16_t)(active_edge_count_target(ch) - 1u));
     channels[ch].edge_count_seen = 0;
     channels[ch].edge_counter_state = EDGE_COUNTER_WAIT_TARGET;
     pwm_set_irq_enabled(channels[ch].pwm_slice, true);
@@ -465,7 +571,7 @@ static void restart_edge_counter_after_pulse(uint ch, uint slice) {
         busy_wait_ns(channels[ch].auto_clear_delay_ns);
     }
     pwm_set_counter(slice, 0);
-    pwm_set_wrap(slice, (uint16_t)(channels[ch].edge_count_target - 1u));
+    pwm_set_wrap(slice, (uint16_t)(active_edge_count_target(ch) - 1u));
     channels[ch].edge_count_seen = 0;
     channels[ch].edge_counter_state = EDGE_COUNTER_WAIT_TARGET;
     pwm_set_irq_enabled(slice, true);
@@ -493,7 +599,7 @@ static uint32_t edge_count_current(uint ch) {
     }
 
     if (channels[ch].edge_counter_state == EDGE_COUNTER_ACTIVE) {
-        return channels[ch].edge_count_target + pwm_get_counter(channels[ch].pwm_slice);
+        return active_edge_count_target(ch) + pwm_get_counter(channels[ch].pwm_slice);
     }
 
     return channels[ch].edge_count_seen;
@@ -1134,7 +1240,8 @@ static void pwm_wrap_callback(void) {
         }
 
         if (channels[ch].edge_counter_state == EDGE_COUNTER_WAIT_TARGET) {
-            channels[ch].edge_count_seen = channels[ch].edge_count_target;
+            uint32_t target = active_edge_count_target(ch);
+            channels[ch].edge_count_seen = target;
             channels[ch].pending = true;
             channels[ch].event_count++;
             channels[ch].last_event_us = time_us_64();
@@ -1152,6 +1259,7 @@ static void pwm_wrap_callback(void) {
         if (channels[ch].edge_counter_state == EDGE_COUNTER_ACTIVE) {
             set_output_idle(ch);
             channels[ch].pending = false;
+            note_channel_trigger_complete(ch);
             restart_edge_counter_after_pulse(ch, slice);
         }
     }
@@ -1256,6 +1364,7 @@ void trigger_arm(void) {
     clear_pending_outputs();
     armed = true;
     for (uint ch = 0; ch < TRIGGER_CHANNEL_COUNT; ch++) {
+        reset_step_reduce_runtime(ch);
         start_edge_counter(ch);
     }
     status_led_set_armed(true);
@@ -1339,6 +1448,8 @@ bool trigger_config_validate_all(const trigger_channel_config_t configs[TRIGGER_
             configs[ch].edge_count_target > TRIGGER_EDGE_COUNT_MAX ||
             configs[ch].pulse_width_edges == 0 ||
             configs[ch].pulse_width_edges > TRIGGER_EDGE_COUNT_MAX ||
+            configs[ch].step_reduce_every == 0 ||
+            configs[ch].step_reduce_edge_delta > TRIGGER_EDGE_COUNT_MAX ||
             configs[ch].width_us == 0) {
             return false;
         }
@@ -1385,6 +1496,10 @@ bool trigger_get_config(uint ch, trigger_channel_config_t *config) {
     config->pulse_width_edges = channels[ch].pulse_width_edges;
     config->auto_clear_edges = channels[ch].auto_clear_edges;
     config->auto_clear_delay_ns = channels[ch].auto_clear_delay_ns;
+    config->step_reduce_enabled = channels[ch].step_reduce_enabled;
+    config->step_reduce_every = channels[ch].step_reduce_every;
+    config->step_reduce_edge_delta = channels[ch].step_reduce_edge_delta;
+    config->step_reduce_delay_ns = channels[ch].step_reduce_delay_ns;
     config->idle_high = channels[ch].idle_high;
     config->active_high = channels[ch].active_high;
     return true;
@@ -1459,6 +1574,13 @@ bool trigger_get_status(uint ch, trigger_channel_status_t *status) {
     status->pulse_width_edges = channels[ch].pulse_width_edges;
     status->auto_clear_edges = channels[ch].auto_clear_edges;
     status->auto_clear_delay_ns = channels[ch].auto_clear_delay_ns;
+    status->step_reduce_enabled = channels[ch].step_reduce_enabled;
+    status->step_reduce_every = channels[ch].step_reduce_every;
+    status->step_reduce_edge_delta = channels[ch].step_reduce_edge_delta;
+    status->step_reduce_delay_ns = channels[ch].step_reduce_delay_ns;
+    status->step_reduce_count = channels[ch].step_reduce_count;
+    status->step_current_edge_count = active_edge_count_target(ch);
+    status->step_current_delay_ns = active_delay_ns(ch);
     status->edge_count_seen = edge_count_current(ch);
     status->idle_high = channels[ch].idle_high;
     status->active_high = channels[ch].active_high;
@@ -1540,7 +1662,12 @@ bool trigger_set_delay_us(uint ch, uint32_t delay_us) {
         return false;
     }
 
+    uint32_t irq_state = save_and_disable_interrupts();
     channels[ch].delay_us = delay_us;
+    channels[ch].current_delay_ns = delay_us_to_ns_saturated(delay_us);
+    channels[ch].step_reduce_count = 0;
+    channels[ch].delay_remainder_ns = 0;
+    restore_interrupts(irq_state);
     return true;
 }
 
@@ -1575,6 +1702,7 @@ bool trigger_set_mode(uint ch, trigger_mode_t mode) {
     }
     gpio_set_function(channels[ch].input_gpio, GPIO_FUNC_SIO);
     channels[ch].trigger_mode = mode;
+    reset_step_reduce_runtime(ch);
     configure_channel_input(ch);
     if (channels[ch].trigger_mode == TRIGGER_MODE_TIME) {
         gpio_set_irq_enabled(channels[ch].input_gpio, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
@@ -1592,6 +1720,8 @@ bool trigger_set_edge_count_target(uint ch, uint32_t edge_count) {
 
     uint32_t irq_state = save_and_disable_interrupts();
     channels[ch].edge_count_target = edge_count;
+    channels[ch].current_edge_count_target = edge_count;
+    channels[ch].step_reduce_count = 0;
     if (armed && channels[ch].trigger_mode == TRIGGER_MODE_EDGE_COUNT) {
         stop_edge_counter(ch);
         start_edge_counter(ch);
@@ -1630,6 +1760,66 @@ bool trigger_set_auto_clear_delay_ns(uint ch, uint32_t delay_ns) {
     }
 
     channels[ch].auto_clear_delay_ns = delay_ns;
+    return true;
+}
+
+bool trigger_set_step_reduce_enabled(uint ch, bool enabled) {
+    if (!valid_channel(ch)) {
+        return false;
+    }
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    channels[ch].step_reduce_enabled = enabled;
+    reset_step_reduce_runtime(ch);
+    if (armed && channels[ch].trigger_mode == TRIGGER_MODE_EDGE_COUNT) {
+        stop_edge_counter(ch);
+        start_edge_counter(ch);
+    }
+    restore_interrupts(irq_state);
+    return true;
+}
+
+bool trigger_set_step_reduce_every(uint ch, uint32_t every) {
+    if (!valid_channel(ch) || every == 0) {
+        return false;
+    }
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    channels[ch].step_reduce_every = every;
+    reset_step_reduce_runtime(ch);
+    if (armed && channels[ch].trigger_mode == TRIGGER_MODE_EDGE_COUNT) {
+        stop_edge_counter(ch);
+        start_edge_counter(ch);
+    }
+    restore_interrupts(irq_state);
+    return true;
+}
+
+bool trigger_set_step_reduce_edge_delta(uint ch, uint32_t delta) {
+    if (!valid_channel(ch) || delta > TRIGGER_EDGE_COUNT_MAX) {
+        return false;
+    }
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    channels[ch].step_reduce_edge_delta = delta;
+    reset_step_reduce_runtime(ch);
+    if (armed && channels[ch].trigger_mode == TRIGGER_MODE_EDGE_COUNT) {
+        stop_edge_counter(ch);
+        start_edge_counter(ch);
+    }
+    restore_interrupts(irq_state);
+    return true;
+}
+
+bool trigger_set_step_reduce_delay_ns(uint ch, uint32_t delay_ns) {
+    if (!valid_channel(ch)) {
+        return false;
+    }
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    channels[ch].step_reduce_delay_ns = delay_ns;
+    reset_step_reduce_runtime(ch);
+    restore_interrupts(irq_state);
     return true;
 }
 

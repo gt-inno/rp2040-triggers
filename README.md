@@ -50,7 +50,7 @@ python tools\config_gui.py
 
 The GUI connects to the Pico over its USB CDC serial port. Use **Read Status** after connecting, edit channel settings, then use **Apply CHx** or **Apply All** to send the matching firmware commands. Applied settings are saved to the Pico flash and loaded again on boot. Profiles can also be saved and loaded as JSON on the PC.
 
-The GUI can configure each channel's input GPIO, output GPIO, input pull, input edge, output polarity, delay, width, edge-count trigger settings, enabled state, RP2040 system clock, and SWCLK diagnostic captures.
+The GUI can configure each channel's input GPIO, output GPIO, input pull, input edge, output polarity, delay, width, edge-count trigger settings, optional step reduction, enabled state, RP2040 system clock, and SWCLK diagnostic captures.
 
 The firmware emulates EEPROM-style storage in the Pico's flash. It keeps only trigger configuration and the selected system clock, not runtime state such as event counters, pending pulses, live pin levels, or the armed state. The unit always boots disarmed.
 
@@ -65,6 +65,8 @@ The two trigger modes are mutually exclusive per channel. In the GUI, choose **A
 Edge-count mode uses RP2040 PWM hardware to count rising edges on the input pin. The `edge` and `delay_us` settings are not used in this mode; the trigger is rising-edge count based. After arming, it waits for the first SWCLK/input rising edge, counts rising edges, sets the output active when `edge_count` is reached, keeps the output active for `pulse_width_edges` more rising edges, then returns the output idle. It is not one-shot per arm: after each output pulse completes, the counter resets to zero and waits for the next rising-edge sequence while the unit remains armed. The default edge-count target is `16742`; the default pulse width is `100` edges.
 
 The GUI's **Auto Clear** option is enabled by default for edge-count mode. After an edge-count output pulse finishes, the firmware waits `auto_clear_delay_ns` before clearing/restarting the PWM edge counter. The default delay is `10000000 ns`. This is intended to discard tail-edge residue after a trigger while keeping the existing repeating edge-count behavior. Over serial, use `set <ch> auto_clear_edges 0|1` and `set <ch> auto_clear_delay_ns <value>`.
+
+The GUI's **Step Reduce** option is disabled by default. When enabled, the firmware counts completed trigger pulses for that channel. After every `step_reduce_every` pulses, it reduces the next live edge-count threshold by `step_reduce_edge_delta` in `edge_count` mode, or reduces the next live delay by `step_reduce_delay_ns` in `time` mode. The saved base `edge_count` and `delay_us` values are not rewritten by this runtime sweep; arming starts again from the saved base values. The default controls are `step_reduce_every=4`, `step_reduce_edge_delta=1`, and `step_reduce_delay_ns=1`.
 
 The edge-count values are capped at `65535` for both `edge_count` and `pulse_width_edges`. This is a hardware limit from the RP2040 PWM counter/wrap register, which is 16-bit. If SWCLK/input edges stop while the output is active, the output remains active until `pulse_width_edges` more rising edges arrive, or until the channel is disabled, reconfigured, or the unit is disarmed.
 
@@ -126,6 +128,10 @@ set 1 edge_count 16742
 set 1 pulse_width_edges 100
 set 1 auto_clear_edges 1
 set 1 auto_clear_delay_ns 10000000
+set 1 step_reduce_enabled 0
+set 1 step_reduce_every 4
+set 1 step_reduce_edge_delta 1
+set 1 step_reduce_delay_ns 1
 set 1 enabled 1
 set 1 idle low
 set 1 active high

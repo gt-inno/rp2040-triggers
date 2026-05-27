@@ -89,6 +89,10 @@ static void print_help(void) {
     printf("  set <ch> pulse_width_edges <1-65535>\n");
     printf("  set <ch> auto_clear_edges 0|1\n");
     printf("  set <ch> auto_clear_delay_ns <value>\n");
+    printf("  set <ch> step_reduce_enabled 0|1\n");
+    printf("  set <ch> step_reduce_every <trigger_count>\n");
+    printf("  set <ch> step_reduce_edge_delta <0-65535>\n");
+    printf("  set <ch> step_reduce_delay_ns <value>\n");
     printf("  set <ch> enabled 0|1\n");
     printf("  set <ch> idle low|high\n");
     printf("  set <ch> active low|high\n");
@@ -119,7 +123,7 @@ void command_print_status(void) {
         }
 
         printf(
-            "CH%u: enabled=%u input=GP%u output=GP%u mode=%s edge=%s delay_us=%lu width_us=%lu edge_count=%lu pulse_width_edges=%lu auto_clear_edges=%u auto_clear_delay_ns=%lu edge_seen=%lu idle=%s active=%s pending=%u events=%lu last_event_us=%llu input_level=%u output_level=%u pull=%s\n",
+            "CH%u: enabled=%u input=GP%u output=GP%u mode=%s edge=%s delay_us=%lu width_us=%lu edge_count=%lu pulse_width_edges=%lu auto_clear_edges=%u auto_clear_delay_ns=%lu step_reduce_enabled=%u step_reduce_every=%lu step_reduce_edge_delta=%lu step_reduce_delay_ns=%lu step_reduce_count=%lu step_current_edge_count=%lu step_current_delay_ns=%lu edge_seen=%lu idle=%s active=%s pending=%u events=%lu last_event_us=%llu input_level=%u output_level=%u pull=%s\n",
             ch + 1,
             status.enabled ? 1 : 0,
             status.input_gpio,
@@ -132,6 +136,13 @@ void command_print_status(void) {
             (unsigned long)status.pulse_width_edges,
             status.auto_clear_edges ? 1 : 0,
             (unsigned long)status.auto_clear_delay_ns,
+            status.step_reduce_enabled ? 1 : 0,
+            (unsigned long)status.step_reduce_every,
+            (unsigned long)status.step_reduce_edge_delta,
+            (unsigned long)status.step_reduce_delay_ns,
+            (unsigned long)status.step_reduce_count,
+            (unsigned long)status.step_current_edge_count,
+            (unsigned long)status.step_current_delay_ns,
             (unsigned long)status.edge_count_seen,
             trigger_level_name(status.idle_high),
             trigger_level_name(status.active_high),
@@ -447,6 +458,52 @@ static void process_set_command(int ch, const char *key, const char *value) {
 
         mark_settings_dirty();
         printf("[OK] CH%d auto_clear_delay_ns=%lu\n", ch + 1, (unsigned long)delay_ns);
+        return;
+    }
+
+    if (strcmp(key, "step_reduce_enabled") == 0 || strcmp(key, "step_reduce") == 0) {
+        bool enabled = atoi(value) != 0;
+        trigger_set_step_reduce_enabled((uint)ch, enabled);
+        mark_settings_dirty();
+        printf("[OK] CH%d step_reduce_enabled=%u\n", ch + 1, enabled ? 1 : 0);
+        return;
+    }
+
+    if (strcmp(key, "step_reduce_every") == 0 || strcmp(key, "step_every") == 0) {
+        uint32_t every = parse_u32(value);
+        if (!trigger_set_step_reduce_every((uint)ch, every)) {
+            printf("[ERR] step_reduce_every must be greater than 0\n");
+            return;
+        }
+
+        mark_settings_dirty();
+        printf("[OK] CH%d step_reduce_every=%lu\n", ch + 1, (unsigned long)every);
+        return;
+    }
+
+    if (strcmp(key, "step_reduce_edge_delta") == 0 ||
+        strcmp(key, "step_edge_delta") == 0) {
+        uint32_t delta = parse_u32(value);
+        if (!trigger_set_step_reduce_edge_delta((uint)ch, delta)) {
+            printf("[ERR] step_reduce_edge_delta must be 0-65535\n");
+            return;
+        }
+
+        mark_settings_dirty();
+        printf("[OK] CH%d step_reduce_edge_delta=%lu\n", ch + 1, (unsigned long)delta);
+        return;
+    }
+
+    if (strcmp(key, "step_reduce_delay_ns") == 0 ||
+        strcmp(key, "step_delay_ns") == 0) {
+        uint32_t delay_ns = parse_u32(value);
+        if (!trigger_set_step_reduce_delay_ns((uint)ch, delay_ns)) {
+            printf("[ERR] step_reduce_delay_ns must be 0-4294967295\n");
+            return;
+        }
+
+        mark_settings_dirty();
+        printf("[OK] CH%d step_reduce_delay_ns=%lu\n", ch + 1, (unsigned long)delay_ns);
         return;
     }
 

@@ -13,7 +13,7 @@
 #endif
 
 #define SETTINGS_MAGIC 0x43524754u
-#define SETTINGS_VERSION 4u
+#define SETTINGS_VERSION 5u
 #define SETTINGS_MIN_SUPPORTED_VERSION 1u
 #define SETTINGS_FLASH_SECTOR_COUNT 2u
 #define SETTINGS_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - (SETTINGS_FLASH_SECTOR_COUNT * FLASH_SECTOR_SIZE))
@@ -63,12 +63,35 @@ typedef struct {
     uint32_t pulse_width_edges;
     uint32_t auto_clear_edges;
     uint32_t auto_clear_delay_ns;
+} settings_channel_record_v4_t;
+
+typedef struct {
+    uint32_t delay_us;
+    uint32_t width_us;
+    uint32_t auto_clear_delay_ns;
+    uint32_t step_reduce_every;
+    uint32_t step_reduce_delay_ns;
+    uint16_t edge_count_target;
+    uint16_t pulse_width_edges;
+    uint16_t step_reduce_edge_delta;
+    uint8_t input_gpio;
+    uint8_t output_gpio;
+    uint8_t enabled;
+    uint8_t edge_mode;
+    uint8_t input_pull;
+    uint8_t idle_high;
+    uint8_t active_high;
+    uint8_t trigger_mode;
+    uint8_t auto_clear_edges;
+    uint8_t step_reduce_enabled;
 } settings_channel_record_t;
 
 #define SETTINGS_HEADER_BYTES (5u * sizeof(uint32_t))
 #define SETTINGS_CHANNEL_BYTES (TRIGGER_CHANNEL_COUNT * sizeof(settings_channel_record_t))
 #define SETTINGS_CLOCK_BYTES (sizeof(uint32_t))
 #define SETTINGS_RESERVED_BYTES (FLASH_PAGE_SIZE - SETTINGS_HEADER_BYTES - SETTINGS_CHANNEL_BYTES - SETTINGS_CLOCK_BYTES)
+#define SETTINGS_V4_CHANNEL_BYTES (TRIGGER_CHANNEL_COUNT * sizeof(settings_channel_record_v4_t))
+#define SETTINGS_V4_RESERVED_BYTES (FLASH_PAGE_SIZE - SETTINGS_HEADER_BYTES - SETTINGS_V4_CHANNEL_BYTES - SETTINGS_CLOCK_BYTES)
 #define SETTINGS_V2_CHANNEL_BYTES (TRIGGER_CHANNEL_COUNT * sizeof(settings_channel_record_v2_t))
 #define SETTINGS_V2_RESERVED_BYTES (FLASH_PAGE_SIZE - SETTINGS_HEADER_BYTES - SETTINGS_V2_CHANNEL_BYTES - SETTINGS_CLOCK_BYTES)
 #define SETTINGS_V3_CHANNEL_BYTES (TRIGGER_CHANNEL_COUNT * sizeof(settings_channel_record_v3_t))
@@ -84,6 +107,17 @@ typedef struct {
     uint32_t system_clock_khz;
     uint8_t reserved[SETTINGS_RESERVED_BYTES];
 } settings_record_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t size;
+    uint32_t crc32;
+    settings_channel_record_v4_t channels[TRIGGER_CHANNEL_COUNT];
+    uint32_t system_clock_khz;
+    uint8_t reserved[SETTINGS_V4_RESERVED_BYTES];
+} settings_record_v4_t;
 
 typedef struct {
     uint32_t magic;
@@ -115,6 +149,7 @@ typedef struct {
 } settings_scan_t;
 
 _Static_assert(sizeof(settings_record_t) == FLASH_PAGE_SIZE, "settings record must be one flash page");
+_Static_assert(sizeof(settings_record_v4_t) == FLASH_PAGE_SIZE, "v4 settings record must be one flash page");
 _Static_assert(sizeof(settings_record_v3_t) == FLASH_PAGE_SIZE, "v3 settings record must be one flash page");
 _Static_assert(sizeof(settings_record_v2_t) == FLASH_PAGE_SIZE, "v2 settings record must be one flash page");
 _Static_assert(SETTINGS_FLASH_OFFSET % FLASH_SECTOR_SIZE == 0, "settings offset must be sector aligned");
@@ -168,8 +203,13 @@ static bool sequence_is_newer(uint32_t candidate, uint32_t current) {
 }
 
 static uint32_t record_system_clock_khz(const settings_record_t *record) {
-    if (record->version >= 4u) {
+    if (record->version >= 5u) {
         return record->system_clock_khz ? record->system_clock_khz : system_clock_default_khz();
+    }
+
+    if (record->version >= 4u) {
+        const settings_record_v4_t *legacy = (const settings_record_v4_t *)record;
+        return legacy->system_clock_khz ? legacy->system_clock_khz : system_clock_default_khz();
     }
 
     if (record->version >= 3u) {
@@ -196,7 +236,7 @@ static bool record_to_configs(
         return false;
     }
 
-    if (record->version >= 4u) {
+    if (record->version >= 5u) {
         for (uint ch = 0; ch < TRIGGER_CHANNEL_COUNT; ch++) {
             configs[ch].input_gpio = record->channels[ch].input_gpio;
             configs[ch].output_gpio = record->channels[ch].output_gpio;
@@ -212,6 +252,32 @@ static bool record_to_configs(
             configs[ch].pulse_width_edges = record->channels[ch].pulse_width_edges;
             configs[ch].auto_clear_edges = record->channels[ch].auto_clear_edges != 0;
             configs[ch].auto_clear_delay_ns = record->channels[ch].auto_clear_delay_ns;
+            configs[ch].step_reduce_enabled = record->channels[ch].step_reduce_enabled != 0;
+            configs[ch].step_reduce_every = record->channels[ch].step_reduce_every;
+            configs[ch].step_reduce_edge_delta = record->channels[ch].step_reduce_edge_delta;
+            configs[ch].step_reduce_delay_ns = record->channels[ch].step_reduce_delay_ns;
+        }
+    } else if (record->version >= 4u) {
+        const settings_record_v4_t *legacy = (const settings_record_v4_t *)record;
+        for (uint ch = 0; ch < TRIGGER_CHANNEL_COUNT; ch++) {
+            configs[ch].input_gpio = legacy->channels[ch].input_gpio;
+            configs[ch].output_gpio = legacy->channels[ch].output_gpio;
+            configs[ch].enabled = legacy->channels[ch].enabled != 0;
+            configs[ch].edge_mode = (trigger_edge_mode_t)legacy->channels[ch].edge_mode;
+            configs[ch].input_pull = (trigger_input_pull_t)legacy->channels[ch].input_pull;
+            configs[ch].delay_us = legacy->channels[ch].delay_us;
+            configs[ch].width_us = legacy->channels[ch].width_us;
+            configs[ch].idle_high = legacy->channels[ch].idle_high != 0;
+            configs[ch].active_high = legacy->channels[ch].active_high != 0;
+            configs[ch].trigger_mode = (trigger_mode_t)legacy->channels[ch].trigger_mode;
+            configs[ch].edge_count_target = legacy->channels[ch].edge_count_target;
+            configs[ch].pulse_width_edges = legacy->channels[ch].pulse_width_edges;
+            configs[ch].auto_clear_edges = legacy->channels[ch].auto_clear_edges != 0;
+            configs[ch].auto_clear_delay_ns = legacy->channels[ch].auto_clear_delay_ns;
+            configs[ch].step_reduce_enabled = TRIGGER_STEP_REDUCE_ENABLED_DEFAULT;
+            configs[ch].step_reduce_every = TRIGGER_STEP_REDUCE_EVERY_DEFAULT;
+            configs[ch].step_reduce_edge_delta = TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT;
+            configs[ch].step_reduce_delay_ns = TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT;
         }
     } else if (record->version >= 3u) {
         const settings_record_v3_t *legacy = (const settings_record_v3_t *)record;
@@ -230,6 +296,10 @@ static bool record_to_configs(
             configs[ch].pulse_width_edges = legacy->channels[ch].pulse_width_edges;
             configs[ch].auto_clear_edges = TRIGGER_AUTO_CLEAR_EDGES_DEFAULT;
             configs[ch].auto_clear_delay_ns = TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT;
+            configs[ch].step_reduce_enabled = TRIGGER_STEP_REDUCE_ENABLED_DEFAULT;
+            configs[ch].step_reduce_every = TRIGGER_STEP_REDUCE_EVERY_DEFAULT;
+            configs[ch].step_reduce_edge_delta = TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT;
+            configs[ch].step_reduce_delay_ns = TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT;
         }
     } else {
         const settings_record_v2_t *legacy = (const settings_record_v2_t *)record;
@@ -248,6 +318,10 @@ static bool record_to_configs(
             configs[ch].pulse_width_edges = TRIGGER_PULSE_WIDTH_EDGES_DEFAULT;
             configs[ch].auto_clear_edges = TRIGGER_AUTO_CLEAR_EDGES_DEFAULT;
             configs[ch].auto_clear_delay_ns = TRIGGER_AUTO_CLEAR_DELAY_NS_DEFAULT;
+            configs[ch].step_reduce_enabled = TRIGGER_STEP_REDUCE_ENABLED_DEFAULT;
+            configs[ch].step_reduce_every = TRIGGER_STEP_REDUCE_EVERY_DEFAULT;
+            configs[ch].step_reduce_edge_delta = TRIGGER_STEP_REDUCE_EDGE_DELTA_DEFAULT;
+            configs[ch].step_reduce_delay_ns = TRIGGER_STEP_REDUCE_DELAY_NS_DEFAULT;
         }
     }
 
@@ -347,20 +421,24 @@ static void fill_record(
     record->system_clock_khz = system_clock_khz;
 
     for (uint ch = 0; ch < TRIGGER_CHANNEL_COUNT; ch++) {
-        record->channels[ch].input_gpio = configs[ch].input_gpio;
-        record->channels[ch].output_gpio = configs[ch].output_gpio;
+        record->channels[ch].input_gpio = (uint8_t)configs[ch].input_gpio;
+        record->channels[ch].output_gpio = (uint8_t)configs[ch].output_gpio;
         record->channels[ch].enabled = configs[ch].enabled ? 1u : 0u;
-        record->channels[ch].edge_mode = (uint32_t)configs[ch].edge_mode;
-        record->channels[ch].input_pull = (uint32_t)configs[ch].input_pull;
+        record->channels[ch].edge_mode = (uint8_t)configs[ch].edge_mode;
+        record->channels[ch].input_pull = (uint8_t)configs[ch].input_pull;
         record->channels[ch].delay_us = configs[ch].delay_us;
         record->channels[ch].width_us = configs[ch].width_us;
         record->channels[ch].idle_high = configs[ch].idle_high ? 1u : 0u;
         record->channels[ch].active_high = configs[ch].active_high ? 1u : 0u;
-        record->channels[ch].trigger_mode = (uint32_t)configs[ch].trigger_mode;
-        record->channels[ch].edge_count_target = configs[ch].edge_count_target;
-        record->channels[ch].pulse_width_edges = configs[ch].pulse_width_edges;
+        record->channels[ch].trigger_mode = (uint8_t)configs[ch].trigger_mode;
+        record->channels[ch].edge_count_target = (uint16_t)configs[ch].edge_count_target;
+        record->channels[ch].pulse_width_edges = (uint16_t)configs[ch].pulse_width_edges;
         record->channels[ch].auto_clear_edges = configs[ch].auto_clear_edges ? 1u : 0u;
         record->channels[ch].auto_clear_delay_ns = configs[ch].auto_clear_delay_ns;
+        record->channels[ch].step_reduce_enabled = configs[ch].step_reduce_enabled ? 1u : 0u;
+        record->channels[ch].step_reduce_every = configs[ch].step_reduce_every;
+        record->channels[ch].step_reduce_edge_delta = (uint16_t)configs[ch].step_reduce_edge_delta;
+        record->channels[ch].step_reduce_delay_ns = configs[ch].step_reduce_delay_ns;
     }
 
     record->crc32 = record_crc(record);
