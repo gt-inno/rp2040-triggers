@@ -20,10 +20,10 @@ Instead, it calls the prebuilt `elf2uf2.exe` included with the Raspberry Pi Pico
 Delete your old build folder first:
 
 ```powershell
-cd C:\Users\gt-in\VScode-projects\rp2040-triggers
-rmdir /s /q build
-mkdir build
-cd build
+cd path\to\rp2040-triggers
+Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+New-Item -ItemType Directory build
+Set-Location build
 cmake .. -DPICO_SDK_PATH="C:\Program Files\Raspberry Pi\Pico SDK v2.2.0\pico-sdk"
 cmake --build .
 ```
@@ -66,7 +66,7 @@ Edge-count mode uses RP2040 PWM hardware to count rising edges on the input pin.
 
 The GUI's **Auto Clear** option is enabled by default for edge-count mode. After an edge-count output pulse finishes, the firmware waits `auto_clear_delay_ns` before clearing/restarting the PWM edge counter. The default delay is `10000000 ns`. This is intended to discard tail-edge residue after a trigger while keeping the existing repeating edge-count behavior. Over serial, use `set <ch> auto_clear_edges 0|1` and `set <ch> auto_clear_delay_ns <value>`.
 
-The GUI's **Step Reduce** option is disabled by default. When enabled, the firmware counts completed trigger pulses for that channel. After every `step_reduce_every` pulses, it reduces the next live edge-count threshold by `step_reduce_edge_delta` in `edge_count` mode, or reduces the next live delay by `step_reduce_delay_ns` in `time` mode. The saved base `edge_count` and `delay_us` values are not rewritten by this runtime sweep; arming starts again from the saved base values. The default controls are `step_reduce_every=4`, `step_reduce_edge_delta=1`, and `step_reduce_delay_ns=1`.
+The GUI's **Step Reduce** option is disabled by default. When enabled, the firmware counts completed trigger pulses for that channel. After every `step_reduce_every` pulses, it reduces the next live edge-count threshold by `step_reduce_edge_delta` in `edge_count` mode, or reduces the next live delay by `step_reduce_delay_ns` in `time` mode. The saved base `edge_count` and `delay_us` values are not rewritten by this runtime sweep; arming starts again from the saved base values. The default controls are `step_reduce_every=4`, `step_reduce_edge_delta=1`, and `step_reduce_delay_ns=1`. In the GUI, **Output / Live -> Current Count** shows the live edge-count threshold currently being used, including any Step Reduce changes after **Read Status**.
 
 The edge-count values are capped at `65535` for both `edge_count` and `pulse_width_edges`. This is a hardware limit from the RP2040 PWM counter/wrap register, which is 16-bit. If SWCLK/input edges stop while the output is active, the output remains active until `pulse_width_edges` more rising edges arrive, or until the channel is disabled, reconfigured, or the unit is disarmed.
 
@@ -140,3 +140,7 @@ set 1 active high
 ## Warning
 
 RP2040 GPIO is 3.3V only. Use protection/level shifting for ECU/DAP/automotive signals above 3.3V.
+
+## License
+
+This project is licensed under the PolyForm Noncommercial License 1.0.0. Noncommercial use is allowed; commercial use requires separate permission from the repository owner.
